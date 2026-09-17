@@ -17,8 +17,10 @@ create table if not exists public.venues (
   id            text primary key,
   slug          text unique not null,
   name          text not null,
-  kind          text not null check (kind in ('club','bar','pub','live-music','lounge','arena','hall')),
-  district      text not null check (district in ('byward','elgin','centretown','lansdowne','hintonburg','little-italy','sandy-hill')),
+  -- Keep these two lists in step with VenueKind and District in src/lib/types.ts.
+  -- A value the app allows but the constraint rejects fails at seed time, not build time.
+  kind          text not null check (kind in ('club','bar','pub','live-music','lounge','arena','hall','restaurant')),
+  district      text not null check (district in ('byward','elgin','centretown','lansdowne','hintonburg','little-italy','sandy-hill','chinatown','wellington-west','westboro')),
   address       text not null,
   lat           double precision not null,
   lng           double precision not null,
