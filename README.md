@@ -2,8 +2,11 @@
 
 Live crowd reports for Ottawa nightlife and events. findthecrowd.com
 
-People already out report what a place is actually like right now. Everyone else
-sees a single number per venue and knows whether to walk over.
+One question: where should we go right now? People already out report what a
+place is actually like, everyone else sees what that adds up to, and a group can
+send each other a shortlist and vote on it without anyone making an account.
+
+Three jobs, which is also the navigation: **Explore**, **Saved**, **Update**.
 
 ## Run it
 
@@ -12,18 +15,26 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. No database or API key is needed to start: with no
-Supabase credentials the app serves a simulated Ottawa so the screens are never
-empty.
+Open http://localhost:3000. No database or API key is needed to start. In
+development the app serves a generated Ottawa so the screens are not empty, and
+labels it as demo data on every screen that shows it.
 
 Crowd data is time-of-day data, so at 2pm on a Tuesday the honest answer is
-"nobody has reported anything" and the app says so. To see a full weekend, add
-`?at=peak` to any URL. That switch is ignored once a real database is connected.
+"nobody has reported anything". Add `?at=peak` to any URL to wind the clock to
+Saturday 11pm. It is ignored once a database is connected.
+
+`NEXT_PUBLIC_DEMO_DATA=0 npm run dev` turns the generator off, which is how to
+look at the real empty state. That state is a designed screen, not a fallback,
+so it is worth looking at.
+
+**A production build never generates data.** With no database it shows an honest
+empty directory. One misconfigured deploy cannot publish invented crowd reports
+under a real domain.
 
 ```
 npm run build     production build
-npm test          scoring and data tests
-npm run seed      load venues and events into Supabase
+npm test          time, scoring, events, hours, shortlists, report API
+npm run seed      load venues into Supabase
 ```
 
 To put this live on findthecrowd.com, follow `DEPLOY.md`. It covers GitHub,
@@ -37,21 +48,35 @@ question: would you tell a mate to come here right now?
 It is a headcount, not a star rating, which is what makes it checkable. The
 rules, all of which live in `src/lib/score.ts` and are covered by tests:
 
+It counts **people, not submissions**. A contributor's newest report replaces
+their older one in the current aggregate, so reporting a venue ten times still
+counts once.
+
 | Rule | Value | Why |
 | --- | --- | --- |
-| Scoring window | 6 hours | Older reports say nothing about right now |
+| Recommendation window | 6 hours | Older reports say nothing about right now |
 | Half-life | 90 minutes | A report's weight halves this often |
-| Confidence floor | 4 reports | Below this the score is greyed and labelled |
+| Crowd window | 60 minutes | How busy a room is does not keep |
+| Queue window | 30 minutes | A door queue keeps even less well |
+| Confidence floor | 4 distinct contributors | Below this it is labelled low signal |
 | Report cooldown | 20 min per venue per device | Stops promoters and double taps |
 | Device ceiling | 12 reports per hour | Stops one device flooding the city |
 
-Two things stay separate on purpose:
+Four things stay separate on purpose, each with its own freshness window and its
+own timestamp on screen:
 
-- Score is whether people think it's worth being there.
-- Crowd is how full the room is.
+- **Worth going** is whether people think it is worth being there.
+- **Crowd** is how full the room is.
+- **Queue** is the door.
+- **Cover** is the price at that door.
 
 A club can be rammed and score 30. Conflating those is how you end up
-recommending a bad club with a long line.
+recommending a bad club with a long line. Missing reports are never rendered as
+an empty room, a zero, or a verdict: a venue with no reports shows no number at
+all.
+
+Team and venue reports are stored with a `role`, labelled on screen, and kept
+out of the public percentage entirely.
 
 Feed ranking is not a sort by score. A 100% from two people loses to an 84% from
 fifteen, because the score is shrunk toward 50 by a Bayesian prior weighted by
@@ -60,8 +85,12 @@ sample size, then boosted for freshness. See `rankValue`.
 ## Connecting the database
 
 1. Create a Supabase project.
-2. Run `supabase/schema.sql` in the SQL editor. It creates the tables, the
-   row-level security policies, the cooldown triggers and the retention job.
+2. Run `supabase/schema.sql` in the SQL editor, then
+   `supabase/migrations/002_shortlists_and_corrections.sql`. Together they
+   create the tables, the row-level security policies, the cooldown triggers,
+   group shortlists, corrections, and the scheduled retention job.
+   `pg_cron` must be enabled or the 30-day deletion is not actually running;
+   migration 002 prints a notice if it is missing. See `docs/PILOT.md`.
 3. `cp .env.example .env.local` and fill in the URL, anon key and service role
    key.
 4. `npm run seed` to load the venues and a fortnight of events.
@@ -72,42 +101,56 @@ simulated data is never used again. Nothing else changes.
 Reporting deliberately requires no account. Waze's contribution loop works
 because reporting costs nothing; a sign-up wall before the first report kills the
 only data source this product has. Each device holds a random id in
-localStorage, used for the cooldown and nothing else. Reports are deleted after
-30 days.
+localStorage, used for the cooldown and nothing else. Saved places and group
+votes use separate ids that are never joined to reports. Reports are deleted
+after 30 days by a scheduled database job.
 
 ## Layout
 
 ```
 src/
   app/
-    page.tsx            Tonight feed, ranked
+    page.tsx            Explore. Now / Tonight, search, filters, empty state
     v/[slug]/page.tsx   Venue page, score, reports, what's on
+    saved/page.tsx      Saved places, and "ask the group"
+    g/[code]/page.tsx   A shared shortlist. Anonymous voting, noindex, expires
     report/page.tsx     Pick a venue, then the report sheet
-    events/page.tsx     Seven days of Ottawa events
+    corrections/page.tsx  A correction form that actually receives things
+    events/page.tsx     Seven nights of checked Ottawa events
     guides/             Ottawa guide pages, written for search
     sitemap.ts          Every page, for Google Search Console
     robots.ts           Crawl rules
     opengraph-image.tsx The picture a pasted link shows
     about/page.tsx      How the score works, in plain words
-    api/reports/route.ts  Server-side validation, the real boundary
+    api/reports/route.ts      Server-side validation, the real boundary
+    api/shortlists/**         Create a shortlist, cast and change votes
+    api/corrections/route.ts  Receives corrections
   lib/
+    time.ts             Ottawa time. Instants, nights, DST. Read this first
     score.ts            The scoring engine. Pure, tested, injectable clock
-    score.test.ts       scoring tests
+    hours.ts            Open / opens later / unconfirmed, from sourced hours
+    saved.ts            Saved places and the voter id, both local to a browser
+    analytics.ts        Event names chosen so they cannot flatter the product
     store/              Data layer. Screens never touch Supabase directly
-      index.ts            Public API: getTonight, getVenueDetail, submitReport
+      index.ts            Public API: getExplore, getVenueDetail, submitReport,
+                          shortlists, corrections, getCoverage
       supabase.ts         Postgres adapter
       synthetic.ts        Demo generator, only when no database is configured
     types.ts            Domain types
     labels.ts           Every user-facing string for enums, in one place
     seo.ts              Titles, canonicals, structured data
-    clock.ts            Time formatting that respects the Ottawa timezone
   data/
     venues.ts           41 Ottawa venues and restaurants across nine areas
     guides.ts           Guide content. Plain text, no CMS needed yet
-    events.ts           Weekly event templates, expanded against today
+    events.ts           VERIFIED events only. Every one carries a source URL
+    events.sample.ts    Unverified fixtures. Development and preview only
+    editorial.ts        The empty state's picks, drawn from the guides
     data.test.ts        Guards: no broken venue links, no stale copy
 supabase/schema.sql     Tables, RLS, cooldown triggers, retention
-scripts/seed.ts         Loads venues and events into Supabase
+supabase/migrations/    002: roles, event provenance, shortlists, corrections
+docs/PILOT.md           How to run the Ottawa pilot and what would prove it
+docs/DATA-CHANGES.md    Every listing corrected, demoted or deleted, and why
+scripts/seed.ts         Loads venues into Supabase
 ```
 
 `src/lib/store/index.ts` is the seam. When real event feeds and a venue table
@@ -119,9 +162,12 @@ Solid colours, no gradients, no glass, no glow. Borders separate things, not dro
 shadows. One accent, used for the brand, the live state and the primary action.
 Numbers are the loudest thing on screen.
 
-The red flag on a card is the loudest element in the app, so it stays rare: a
-venue earns it only by being live, confidently scored above 85 and busy, and at
-most three can hold it at once. If everything is flagged, nothing is.
+Contrast is measured, not eyeballed. Three pairs failed WCAG 2.2 AA for normal
+text and are fixed in `globals.css` without changing the brand orange: the
+dimmest text colour, the ink on the accent (near-black rather than white, which
+was 3.57:1), and the lowest score band. Interactive targets are 44 to 48px,
+focus is visible everywhere, and the report sheet traps focus, closes on Escape
+and returns focus to the control that opened it.
 
 ## Before launch
 

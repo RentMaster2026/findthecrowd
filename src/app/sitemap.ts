@@ -20,6 +20,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: canonical("/events"), lastModified: now, changeFrequency: "daily", priority: 0.8 },
     { url: canonical("/report"), lastModified: now, changeFrequency: "monthly", priority: 0.5 },
     { url: canonical("/about"), lastModified: now, changeFrequency: "monthly", priority: 0.4 },
+    { url: canonical("/corrections"), lastModified: now, changeFrequency: "monthly", priority: 0.3 },
+    // /saved is per-browser and /g/<code> is private, so neither is listed.
 
     ...GUIDES.map((guide) => ({
       url: canonical(`/guides/${guide.slug}`),

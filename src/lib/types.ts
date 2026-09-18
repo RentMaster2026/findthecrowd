@@ -5,6 +5,8 @@
  * the score engine consumes it. If you add a field, add the reason.
  */
 
+import type { PlainDate } from "./time";
+
 export type District =
   | "byward"
   | "elgin"
@@ -34,6 +36,23 @@ export type VenueKind =
  */
 export type VenueClass = "nightlife" | "food";
 
+/**
+ * Opening hours, as Ottawa wall-clock times per weekday.
+ *
+ * `null` for a day means closed. A close time earlier than the open time means
+ * the venue closes after midnight, which is most of them.
+ *
+ * This exists because "open" was being inferred from an event title or a stale
+ * report, which is how a listing tells someone to walk to a locked door. A
+ * venue with no entry here is reported as "hours unconfirmed", never as open.
+ */
+export interface OpeningHours {
+  /** Indexed 0 = Sunday .. 6 = Saturday. */
+  week: ({ open: string; close: string } | null)[];
+  /** Where these hours came from, so a wrong one can be traced and fixed. */
+  source: SourceRef;
+}
+
 export interface Venue {
   id: string;
   slug: string;
@@ -50,7 +69,16 @@ export interface Venue {
   /** Typical door cover in CAD. null = no cover / varies by night. */
   typicalCover: number | null;
   agePolicy: "18+" | "19+" | "all-ages" | "varies";
+  /** Absent means hours are unconfirmed. It does not mean closed. */
+  hours?: OpeningHours;
 }
+
+/** What we can honestly say about whether a venue's doors are open. */
+export type OpenState =
+  | { kind: "open"; closesAt: string }
+  | { kind: "opens-later"; opensAt: string }
+  | { kind: "closed-tonight" }
+  | { kind: "unconfirmed" };
 
 /** How packed the room is. 1 = empty, 5 = shoulder to shoulder. */
 export type CrowdLevel = 1 | 2 | 3 | 4 | 5;
@@ -78,6 +106,16 @@ export type VibeTag =
   | "slow-service"
   | "worth-the-wait";
 
+/**
+ * Who filed a report.
+ *
+ * An independent public contributor is the default and the only kind that
+ * feeds the public consensus. Anything else has to say so on the card: a
+ * venue's own staff talking up their own room is not the same fact as a
+ * stranger in the room, and mixing them silently would make the number a lie.
+ */
+export type ReporterRole = "public" | "team" | "venue";
+
 export interface CrowdReport {
   id: string;
   venueId: string;
@@ -89,55 +127,158 @@ export interface CrowdReport {
   /** Observed cover in CAD. null = walked in free or didn't check. */
   cover: number | null;
   /**
-   * The Vibe Score input. "Would you tell a friend to come here right now?"
-   * This is the only field that feeds the headline number.
+   * The headline input. "Would you tell a friend to come here right now?"
+   * This is the only field that feeds the "worth going" number.
    */
   worthIt: boolean;
   tags: VibeTag[];
   /** Community confirmations minus disputes. Used as a trust weight. */
   netConfirms: number;
+  /** Defaults to "public". Non-public reports are labelled and excluded. */
+  role?: ReporterRole;
 }
 
-export type ScoreBand = "going-off" | "worth-it" | "mixed" | "skip-it" | "no-signal";
+export type ScoreBand = "worth-going" | "mixed" | "skip-it" | "no-signal";
 export type Freshness = "live" | "recent" | "earlier" | "cold";
 
+/**
+ * A fact derived from reports, carrying the evidence that supports it.
+ *
+ * Nothing in the UI renders a derived number without also being able to say
+ * how many people it came from and how old it is. Bundling them makes it
+ * impossible to display one without the other by accident.
+ */
+export interface Observation<T> {
+  value: T;
+  /** Distinct contributors whose latest qualifying report supports this. */
+  contributors: number;
+  /** Minutes since the newest report behind this observation. */
+  minutesSinceLast: number;
+}
+
 export interface VibeScore {
-  /** 0-100, percent of recency-weighted reports that said "worth it". */
+  /**
+   * Percent of recent distinct contributors who said it is worth going.
+   * This is a share of people, not an occupancy percentage.
+   */
   score: number | null;
   band: ScoreBand;
-  /** Recency-weighted mean crowd level, 1-5. */
-  crowd: number | null;
-  line: LineLength | null;
-  /** Median observed cover in the window, CAD. */
-  cover: number | null;
-  /** Raw count of reports inside the scoring window. */
-  sampleSize: number;
-  /** Below the confidence floor we show the number greyed out with a warning. */
+  /** Distinct contributors inside the recommendation window. */
+  contributors: number;
+  /** Enough distinct contributors to present the number plainly. */
   confident: boolean;
   freshness: Freshness;
-  /** Minutes since the most recent report. null when there are none. */
+  /** Minutes since the most recent qualifying report. null when there are none. */
   minutesSinceLast: number | null;
-  /** Tags mentioned by at least a third of reporters, most common first. */
+  /**
+   * ISO instant of the most recent qualifying report. Carried separately from
+   * the minute count so a share message can print a real "as of" clock time
+   * rather than a relative phrase that rots the moment it is forwarded.
+   */
+  lastReportAt: string | null;
+  /** Crowd level 1-5. Present only while a report is inside the crowd window. */
+  crowd: Observation<number> | null;
+  /** Door queue. Present only inside the shorter queue window. */
+  queue: Observation<LineLength> | null;
+  /** Observed cover in CAD. Changes slowly, so it uses the full window. */
+  cover: Observation<number> | null;
+  /** Contributors are meaningfully split on whether it is worth going. */
+  split: boolean;
+  /** Tags mentioned by at least a third of contributors, most common first. */
   topTags: VibeTag[];
 }
+
+/* -------------------------------------------------------------- events ---- */
+
+/**
+ * Where a listing came from.
+ *
+ * `url` must point at the page that actually supports THIS event — a calendar
+ * entry, a ticket page, a team schedule. A venue's homepage is not evidence
+ * that a particular night is happening at a particular time for a particular
+ * price, so a homepage-only source is recorded as unverified.
+ */
+export interface SourceRef {
+  /** Human label shown on the card, e.g. "House of TARG events page". */
+  label: string;
+  /** The supporting page. Rendered as a real link. */
+  url: string;
+  /** ISO date a human last checked this against the source. */
+  checkedAt: string;
+}
+
+/**
+ * Door price. "Unknown" is a first-class answer.
+ *
+ * Substituting a plausible number for a price nobody checked is the same class
+ * of error as inventing a crowd score, so there is no way to express "probably
+ * about twenty dollars" in this type.
+ */
+export type EventPrice =
+  | { kind: "free" }
+  | { kind: "amount"; cad: number }
+  | { kind: "unknown" };
+
+export type EventStatus = "scheduled" | "cancelled";
 
 export interface VenueEvent {
   id: string;
   venueId: string;
   title: string;
-  /** ISO 8601 start time, local Ottawa time. */
+  /** ISO 8601 instant (UTC underneath). Never a naive local string. */
   startsAt: string;
   endsAt: string | null;
+  /** The Ottawa night this belongs to. A 12:30am set belongs to the night before. */
+  nightOf: PlainDate;
   category: "dj" | "live-band" | "comedy" | "sports" | "market" | "festival" | "community";
-  /** Door price in CAD. null = free. */
-  price: number | null;
+  price: EventPrice;
   ticketUrl: string | null;
-  /** Where this listing came from. Shown on the card — attribution is not optional. */
-  source: string;
+  source: SourceRef;
+  status: EventStatus;
+  /**
+   * True only when `source.url` is a page that supports this specific event.
+   * Unverified events never render on a public surface.
+   */
+  verified: boolean;
+  /** Set on a cancelled or rescheduled event so the card can explain itself. */
+  note?: string;
 }
 
 export interface VenueWithScore {
   venue: Venue;
   score: VibeScore;
+  /** The venue's next verified event on the night being viewed, if any. */
   nextEvent: VenueEvent | null;
+  openState: OpenState;
+}
+
+/* ---------------------------------------------------------- shortlists ---- */
+
+/**
+ * A "pick with friends" shortlist. Small on purpose: a link, a few venues, one
+ * vote each, an expiry. It is a utility for one night out, not a social graph.
+ */
+export interface Shortlist {
+  /** Unguessable, URL-safe. This is the only credential the link carries. */
+  code: string;
+  venueIds: string[];
+  createdAt: string;
+  expiresAt: string;
+  /** Optional free-text label the creator typed, e.g. "Sam's birthday". */
+  title: string | null;
+}
+
+export interface ShortlistVote {
+  code: string;
+  /** Anonymous browser id. Limits casual duplicates. Not proof of a person. */
+  voterId: string;
+  venueId: string;
+  createdAt: string;
+}
+
+export interface ShortlistTally {
+  shortlist: Shortlist;
+  counts: { venueId: string; votes: number }[];
+  totalVotes: number;
+  expired: boolean;
 }

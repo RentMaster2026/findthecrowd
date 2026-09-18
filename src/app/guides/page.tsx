@@ -3,7 +3,7 @@ import { GUIDES } from "@/data/guides";
 import { TopBar } from "@/components/TopBar";
 import { JsonLd } from "@/components/JsonLd";
 import { breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
-import { formatPlainMonth } from "@/lib/clock";
+import { formatMonthLong } from "@/lib/time";
 
 export const metadata = pageMetadata({
   title: "Ottawa going out guides",
@@ -36,7 +36,7 @@ export default function GuidesIndex() {
               <div className="guide-card-title">{guide.title}</div>
               <p className="guide-card-desc">{guide.description}</p>
               <div className="source-line">
-                {places} places · updated {formatPlainMonth(guide.updated)}
+                {places} places · updated {formatMonthLong(guide.updated)}
               </div>
             </Link>
           );

@@ -1,153 +1,301 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { getTonight, isLiveBackend } from "@/lib/store";
+import { getExplore, getTonightEvents, demoDataEnabled, isLiveBackend } from "@/lib/store";
+import { VENUE_BY_ID, VENUE_BY_SLUG } from "@/data/venues";
+import { editorialPicks } from "@/data/editorial";
 import { VenueCard } from "@/components/VenueCard";
+import { EventCard } from "@/components/EventCard";
 import { TopBar } from "@/components/TopBar";
-import { DistrictFilter } from "@/components/DistrictFilter";
+import { ExploreControls } from "@/components/ExploreControls";
+import { PageSignals } from "@/components/PageSignals";
+import { SecondaryNav } from "@/components/Nav";
+import { JsonLd } from "@/components/JsonLd";
 import { DISTRICT_LABEL } from "@/lib/labels";
 import { resolveNow, simulatedLabel } from "@/lib/demo";
-import { JsonLd } from "@/components/JsonLd";
 import { breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
-import type { District, VenueWithScore } from "@/lib/types";
+import { formatNightLong, nightOf } from "@/lib/time";
+import type { District } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = pageMetadata({
-  title: "What is good in Ottawa tonight",
+  title: "Where should we go? Ottawa tonight",
   description:
-    "Live crowd reports from people already out in Ottawa. See which bars and clubs are busy right now, how long the line is, and whether it is worth the walk.",
+    "Fresh crowd updates from people already out in Ottawa, plus tonight's verified events. See what is worth going to, save a few options and send them to your friends.",
   path: "/",
 });
 
-const DISTRICTS: District[] = [
-  "byward",
-  "elgin",
-  "centretown",
-  "lansdowne",
-  "hintonburg",
-  "little-italy",
-];
+const INITIAL_ROWS = 12;
 
-function greeting(now: Date): { title: string; sub: string } {
-  const h = now.getHours();
-  const day = now.toLocaleDateString("en-CA", { weekday: "long" });
-  if (h >= 22 || h < 4) return { title: "Out right now", sub: `${day} night · ranked by people already there` };
-  if (h >= 17) return { title: "Tonight", sub: `${day} · ranked by people already there` };
-  if (h >= 12) return { title: "Later today", sub: `${day} · reports pick up after 8pm` };
-  return { title: "Today", sub: `${day} · reports pick up after 8pm` };
-}
-
-export default async function TonightPage({
+export default async function ExplorePage({
   searchParams,
 }: {
-  searchParams: Promise<{ district?: string; at?: string }>;
+  searchParams: Promise<{
+    district?: string;
+    kind?: string;
+    q?: string;
+    view?: string;
+    at?: string;
+    show?: string;
+  }>;
 }) {
-  const { district, at } = await searchParams;
+  const { district, kind, q, view, at, show } = await searchParams;
   const { now, simulated } = resolveNow(at);
-  const all = await getTonight(now);
+  const tonight = view === "tonight";
 
-  const filtered = district ? all.filter((r) => r.venue.district === district) : all;
-
-  const hot = filtered.filter((r) => r.score.score !== null && r.score.freshness !== "cold");
-
-  /**
-   * The solid red flag is the loudest thing in the app, so it has to stay rare.
-   * A venue earns it by being live, confidently scored above 85, and busy, and
-   * at most three can hold it at once. If everything is flagged, nothing is.
-   */
-  const flagged = new Set(
-    hot
-      .filter(
-        (r) =>
-          r.score.freshness === "live" &&
-          r.score.confident &&
-          (r.score.score ?? 0) >= 85 &&
-          (r.score.crowd ?? 0) >= 3.5
-      )
-      .slice(0, 3)
-      .map((r) => r.venue.id)
+  const explore = await getExplore(
+    now,
+    { district, kind, q },
+    (d) => DISTRICT_LABEL[d as District] ?? d
   );
-  const quiet = filtered.filter((r) => r.score.score === null || r.score.freshness === "cold");
+  const events = await getTonightEvents(now);
+  const night = nightOf(now);
 
-  const liveReports = all.reduce(
-    (sum, r) => sum + (r.score.minutesSinceLast !== null && r.score.minutesSinceLast <= 60 ? r.score.sampleSize : 0),
-    0
-  );
+  const showAll = show === "all";
+  const reported = explore.reported;
+  const quiet = showAll ? explore.quiet : explore.quiet.slice(0, INITIAL_ROWS);
+  const remaining = explore.quiet.length - quiet.length;
 
-  const { title, sub } = greeting(now);
+  const filterQs = new URLSearchParams();
+  if (district) filterQs.set("district", district);
+  if (kind) filterQs.set("kind", kind);
+  if (q) filterQs.set("q", q);
+  if (view) filterQs.set("view", view);
+  filterQs.set("show", "all");
 
   return (
     <>
       <JsonLd data={breadcrumbJsonLd([{ name: "Find the Crowd", path: "/" }])} />
-      <TopBar liveReports={liveReports} />
+      <PageSignals event="explore_viewed" night={night} props={{ view: tonight ? "tonight" : "now" }} />
+      <TopBar contributorsThisHour={explore.contributorsThisHour} />
 
-      <div className="page" style={{ paddingBottom: 0 }}>
-        <h1 className="page-title">{title}</h1>
+      <div className="page page-tight">
+        <h1 className="page-title">Where should we go?</h1>
         <p className="page-sub">
-          {district ? `${DISTRICT_LABEL[district as District]} · ` : ""}
-          {sub}
+          Fresh updates from people already out, and tonight&apos;s checked events.{" "}
+          {formatNightLong(night)} in Ottawa.
         </p>
       </div>
 
-      <Suspense fallback={<div className="filters" />}>
-        <DistrictFilter districts={DISTRICTS} />
+      <Suspense fallback={<div className="controls" />}>
+        <ExploreControls resultCount={tonight ? events.length : explore.rows.length} />
       </Suspense>
 
-      <div className="page" style={{ paddingTop: 0 }}>
-        {!isLiveBackend() && (
-          <div className="note">
-            Demo data.{" "}
+      <div className="page page-top-flush">
+        {demoDataEnabled() && (
+          <div className="note note-demo">
+            <strong>Demo data.</strong> No database is connected, so crowd reports on this
+            screen are generated and event listings include unverified samples. Nothing here
+            is a real report.{" "}
             {simulated ? (
               <>
-                Clock wound forward to {simulatedLabel(now)} so you can see a full weekend.{" "}
-                <Link href="/" style={{ textDecoration: "underline" }}>
+                Clock wound forward to {simulatedLabel(now)}{". "}
+                <Link href="/" className="inline-link">
                   Back to real time
                 </Link>
                 .
               </>
             ) : (
-              <>
-                No database is connected yet, so these reports are simulated for the current
-                hour. That is why a weekday afternoon looks quiet.{" "}
-                <Link href="/?at=peak" style={{ textDecoration: "underline" }}>
-                  See it at Saturday 11pm
-                </Link>
-                .
-              </>
+              <Link href="/?at=peak" className="inline-link">
+                See it at Saturday 11pm
+              </Link>
             )}
           </div>
         )}
 
-        {hot.length === 0 && quiet.length === 0 && (
-          <div className="empty">Nothing in this district yet.</div>
-        )}
-
-        <div className="feed">
-          {hot.map((row: VenueWithScore) => (
-            <VenueCard key={row.venue.id} row={row} flag={flagged.has(row.venue.id)} />
-          ))}
-        </div>
-
-        {quiet.length > 0 && (
+        {tonight ? (
+          <TonightView events={events} night={night} />
+        ) : (
           <>
-            <div className="section-head">
-              <h2>No signal yet</h2>
-              <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
-                {quiet.length} {quiet.length === 1 ? "venue" : "venues"}
-              </span>
-            </div>
-            <div className="note">
-              These have no reports in the last six hours. If you&apos;re at one, you&apos;re the
-              first. Two taps puts it on the map for everyone else.
-            </div>
-            <div className="feed">
-              {quiet.map((row) => (
-                <VenueCard key={row.venue.id} row={row} />
-              ))}
-            </div>
+            {reported.length > 0 && (
+              <>
+                <div className="section-head">
+                  <h2>Reported in the last few hours</h2>
+                  <span className="section-count">{reported.length}</span>
+                </div>
+                <div className="feed">
+                  {reported.map((row) => (
+                    <VenueCard key={row.venue.id} row={row} night={night} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {reported.length === 0 && (
+              <NoSignalYet events={events} night={night} venueCount={explore.rows.length} />
+            )}
+
+            {quiet.length > 0 && (
+              <>
+                <div className="section-head">
+                  <h2>Everywhere else</h2>
+                  <span className="section-count">{explore.quiet.length}</span>
+                </div>
+                <p className="section-note">
+                  No reports in the last six hours. That is a gap in coverage, not a verdict on
+                  the room.
+                </p>
+                <div className="feed">
+                  {quiet.map((row) => (
+                    <VenueCard key={row.venue.id} row={row} night={night} />
+                  ))}
+                </div>
+                {remaining > 0 && (
+                  <Link href={`/?${filterQs}`} className="btn btn-ghost" scroll={false}>
+                    Show {remaining} more
+                  </Link>
+                )}
+              </>
+            )}
+
+            {explore.rows.length === 0 && (
+              <div className="empty">
+                <p>Nothing matches that filter.</p>
+                <Link href="/" className="inline-link">
+                  Clear filters
+                </Link>
+              </div>
+            )}
           </>
         )}
+
+        {!isLiveBackend() && !demoDataEnabled() && (
+          <p className="source-line" style={{ marginTop: 20 }}>
+            No database is connected, so no reports can be shown or saved on this deployment.
+          </p>
+        )}
+
+        <SecondaryNav />
       </div>
     </>
+  );
+}
+
+/* ------------------------------------------------------------- tonight --- */
+
+function TonightView({
+  events,
+  night,
+}: {
+  events: Awaited<ReturnType<typeof getTonightEvents>>;
+  night: string;
+}) {
+  if (events.length === 0) {
+    return (
+      <div className="empty">
+        <p>No checked events for {formatNightLong(night)} yet.</p>
+        <p className="empty-sub">
+          Only events with a source we have actually looked at appear here, so this list is
+          short while Ottawa coverage is being built. It is not a claim that nothing is on.
+        </p>
+        <Link href="/" className="inline-link">
+          See what people are reporting instead
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="section-head">
+        <h2>Tonight&apos;s checked events</h2>
+        <span className="section-count">{events.length}</span>
+      </div>
+      <div className="feed">
+        {events.map((event) => {
+          const venue = VENUE_BY_ID.get(event.venueId);
+          if (!venue) return null;
+          return <EventCard key={event.id} event={event} venue={venue} night={night} />;
+        })}
+      </div>
+      <p className="source-line">
+        Every event here links to the page it came from and the date we checked it. Events we
+        could not verify are not listed.
+      </p>
+    </>
+  );
+}
+
+/* ----------------------------------------------------------- empty state -- */
+
+/**
+ * The empty state is a product screen, not a fallback.
+ *
+ * When nothing has been reported, the page still has to answer "where should we
+ * go". It does that with things that are true without any reports: events with
+ * a checked source, a short editorial list that says why, and a direct
+ * invitation to be the first person to report. What it must never do is fill
+ * the screen with unknown-score tiles, which is what the audited version did
+ * with all 41 venues.
+ */
+function NoSignalYet({
+  events,
+  night,
+  venueCount,
+}: {
+  events: Awaited<ReturnType<typeof getTonightEvents>>;
+  night: string;
+  venueCount: number;
+}) {
+  const picks = editorialPicks(3);
+
+  return (
+    <section className="empty-state">
+      <h2>Nobody has reported yet tonight</h2>
+      <p>
+        No usable crowd updates in the last six hours across {venueCount}{" "}
+        {venueCount === 1 ? "place" : "places"}. Here is what we can tell you without them.
+      </p>
+
+      {events.length > 0 && (
+        <>
+          <h3>Checked events for {formatNightLong(night)}</h3>
+          <div className="feed">
+            {events.slice(0, 3).map((event) => {
+              const venue = VENUE_BY_ID.get(event.venueId);
+              if (!venue) return null;
+              return <EventCard key={event.id} event={event} venue={venue} night={night} />;
+            })}
+          </div>
+        </>
+      )}
+
+      {picks.length > 0 && (
+        <>
+          <h3>
+            Editorial picks <span className="badge">Our opinion, not tonight&apos;s data</span>
+          </h3>
+          <ul className="pick-list">
+            {picks.map((pick) => {
+              const venue = VENUE_BY_SLUG.get(pick.venueSlug);
+              if (!venue) return null;
+              return (
+                <li key={pick.venueSlug}>
+                  <Link href={`/v/${venue.slug}`} className="pick-name">
+                    {venue.name}
+                  </Link>
+                  <span className="pick-meta">{DISTRICT_LABEL[venue.district]}</span>
+                  <p className="pick-note">{pick.note}</p>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="source-line">
+            From our guide,{" "}
+            <Link href={`/guides/${picks[0].guideSlug}`} className="inline-link">
+              {picks[0].guideTitle}
+            </Link>
+            . Written by us, unaffected by reports, and not paid for.
+          </p>
+        </>
+      )}
+
+      <div className="empty-cta">
+        <p>Out somewhere right now? Two questions and everyone else knows what it is like.</p>
+        <Link href="/report" className="btn">
+          Add the first update
+        </Link>
+      </div>
+    </section>
   );
 }

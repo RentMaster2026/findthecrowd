@@ -1,8 +1,11 @@
+import { formatOttawaClock } from "./time";
 import type {
   CrowdLevel,
   District,
+  EventPrice,
   Freshness,
   LineLength,
+  OpenState,
   ScoreBand,
   VenueClass,
   VenueKind,
@@ -70,20 +73,73 @@ export const LINE_LABEL: Record<LineLength, string> = {
   brutal: "Brutal line",
 };
 
+/**
+ * The words under the number.
+ *
+ * "Worth going" rather than "Going off", because the number is the share of
+ * people who said go — not how full the room is. The old "Going off" label read
+ * as an occupancy claim sitting on top of a recommendation figure, which is
+ * exactly the conflation the scoring engine goes out of its way to avoid.
+ */
 export const BAND_LABEL: Record<ScoreBand, string> = {
-  "going-off": "Going off",
-  "worth-it": "Worth it",
+  "worth-going": "Worth going",
   mixed: "Mixed",
   "skip-it": "Skip it",
   "no-signal": "No reports yet",
 };
 
 export const FRESHNESS_LABEL: Record<Freshness, string> = {
-  live: "Live",
-  recent: "Recent",
-  earlier: "Earlier tonight",
+  live: "Reported in the last hour",
+  recent: "Reported in the last few hours",
+  earlier: "Reported earlier tonight",
   cold: "No recent reports",
 };
+
+/* ---------------------------------------------------------- open state ---- */
+
+export function openLabel(state: OpenState): string {
+  switch (state.kind) {
+    case "open":
+      return `Open until ${formatOttawaClock(state.closesAt)}`;
+    case "opens-later":
+      return `Opens ${formatOttawaClock(state.opensAt)}`;
+    case "closed-tonight":
+      return "Closed tonight";
+    case "unconfirmed":
+      return "Hours unconfirmed";
+  }
+}
+
+/** Short form for a dense chip row. */
+export function openLabelShort(state: OpenState): string {
+  switch (state.kind) {
+    case "open":
+      return "Open";
+    case "opens-later":
+      return `Opens ${formatOttawaClock(state.opensAt)}`;
+    case "closed-tonight":
+      return "Closed";
+    case "unconfirmed":
+      return "Hours unknown";
+  }
+}
+
+/* --------------------------------------------------------------- price ---- */
+
+/**
+ * An unknown price says so. It never becomes "Free", which is what a
+ * `price: null` field quietly did before.
+ */
+export function priceLabel(price: EventPrice): string {
+  switch (price.kind) {
+    case "free":
+      return "Free";
+    case "amount":
+      return `$${price.cad % 1 === 0 ? price.cad : price.cad.toFixed(2)}`;
+    case "unknown":
+      return "Price not checked";
+  }
+}
 
 export const TAG_LABEL: Record<VibeTag, string> = {
   "good-music": "Music is good",

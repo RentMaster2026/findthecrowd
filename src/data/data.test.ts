@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { VENUES, VENUE_BY_SLUG } from "./venues";
 import { GUIDES } from "./guides";
-import { expandEvents } from "./events";
+import { eventsForNights, upcomingNights } from "./events";
 import { ALL_TAGS, TAG_LABEL, TAG_ORDER_FOOD, TAG_ORDER_NIGHTLIFE } from "@/lib/labels";
 
 /**
@@ -99,16 +99,17 @@ describe("guides", () => {
 describe("events", () => {
   it("never returns an event that already finished", () => {
     const now = new Date("2026-09-19T23:00:00-04:00");
-    for (const e of expandEvents(now, 7)) {
+    for (const e of eventsForNights(upcomingNights(now, 7), now, { includeUnverified: true })) {
       expect(new Date(e.endsAt ?? e.startsAt).getTime()).toBeGreaterThanOrEqual(now.getTime());
     }
   });
 
   it("attaches every event to a real venue and names a source", () => {
+    const now = new Date();
     const ids = new Set(VENUES.map((v) => v.id));
-    for (const e of expandEvents(new Date(), 7)) {
+    for (const e of eventsForNights(upcomingNights(now, 7), now, { includeUnverified: true })) {
       expect(ids.has(e.venueId), e.title).toBe(true);
-      expect(e.source.length).toBeGreaterThan(2);
+      expect(e.source.label.length).toBeGreaterThan(2);
     }
   });
 });
