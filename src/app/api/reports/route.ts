@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { VENUE_BY_ID } from "@/data/venues";
-import { canReport, submitReport } from "@/lib/store";
+import { REPORT_COOLDOWN_MIN, REPORT_HOURLY_LIMIT, canReport, submitReport } from "@/lib/store";
 import { ALL_TAGS } from "@/lib/labels";
 import type { CrowdLevel, LineLength, VibeTag } from "@/lib/types";
 
@@ -12,6 +12,10 @@ const LINES: LineLength[] = ["none", "short", "long", "brutal"];
  * Validate on the server, always. The report sheet is a convenience; this is
  * the boundary. Anything that fails validation is a 400 with a sentence a human
  * could act on, not a stack trace.
+ *
+ * Note the two different 429 messages. "You already reported here" and "that is
+ * a lot of reports from one device" are different situations and a person hitting
+ * the first one has done nothing wrong.
  */
 export async function POST(request: Request) {
   let body: unknown;
@@ -61,7 +65,10 @@ export async function POST(request: Request) {
   if (!gate.allowed) {
     return NextResponse.json(
       {
-        error: `You already reported here. You can report again in ${gate.minutesRemaining} min.`,
+        error:
+          gate.reason === "hourly"
+            ? `That's ${REPORT_HOURLY_LIMIT} updates from this device in an hour, which is our limit. Try again later.`
+            : `You already reported here. You can update it again in ${gate.minutesRemaining} min.`,
       },
       { status: 429 }
     );
@@ -79,8 +86,22 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, reportId: report.id });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Could not save that report.";
-    const isCooldown = message.includes("cooldown");
-    return NextResponse.json({ error: message }, { status: isCooldown ? 429 : 500 });
+    // The database trigger is the real gate and it can reject a request that
+    // passed the check above, because two requests can race. Its message is
+    // translated here rather than leaked as a constraint violation.
+    const message = err instanceof Error ? err.message : "Could not save that update.";
+    if (message.includes("cooldown")) {
+      return NextResponse.json(
+        {
+          error: `You already reported here. You can update it again in ${REPORT_COOLDOWN_MIN} min.`,
+        },
+        { status: 429 }
+      );
+    }
+    console.error("[findthecrowd] report insert failed:", message);
+    return NextResponse.json(
+      { error: "We could not save that update. Nothing was recorded, so please try again." },
+      { status: 500 }
+    );
   }
 }

@@ -85,15 +85,16 @@ export function venueJsonLd(venue: Venue, score: VibeScore) {
 
   // Only claim a rating when there is a defensible one behind it. Marking up a
   // score built from two reports is the kind of thing that gets a site a manual
-  // penalty, and it would deserve it.
+  // penalty, and it would deserve it. `contributors` rather than a raw
+  // submission count, so the ratingCount is a number of people.
   if (score.score !== null && score.confident) {
     base.aggregateRating = {
       "@type": "AggregateRating",
       ratingValue: score.score,
       bestRating: 100,
       worstRating: 0,
-      ratingCount: score.sampleSize,
-      reviewCount: score.sampleSize,
+      ratingCount: score.contributors,
+      reviewCount: score.contributors,
     };
   }
 

@@ -6,8 +6,8 @@ import { TopBar } from "@/components/TopBar";
 import { JsonLd } from "@/components/JsonLd";
 import { Score, CrowdMeter } from "@/components/Score";
 import { breadcrumbJsonLd, guideJsonLd, pageMetadata } from "@/lib/seo";
-import { CROWD_LABEL, DISTRICT_LABEL, KIND_LABEL, lineLabel } from "@/lib/labels";
-import { formatPlainDate } from "@/lib/clock";
+import { CROWD_LABEL, DISTRICT_LABEL, KIND_LABEL, lineLabel, relativeTime } from "@/lib/labels";
+import { formatNightLong } from "@/lib/time";
 import type { CrowdLevel, VenueWithScore } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -41,20 +41,18 @@ function GuideVenueRow({ row, note }: { row: VenueWithScore; note: string }) {
           </div>
           <p className="guide-note">{note}</p>
           <div className="card-facts">
-            {score.freshness === "live" && (
-              <span className="chip" data-tone="live">
-                <span className="pulse" />
-                Live
-              </span>
-            )}
-            {score.crowd !== null && (
+            {score.crowd && (
               <span className="chip">
-                <CrowdMeter crowd={score.crowd} />
-                {CROWD_LABEL[Math.round(score.crowd) as CrowdLevel]}
+                <CrowdMeter level={score.crowd.value} />
+                {CROWD_LABEL[Math.round(score.crowd.value) as CrowdLevel]}
+                <span className="chip-age">{relativeTime(score.crowd.minutesSinceLast)}</span>
               </span>
             )}
-            {score.line && score.line !== "none" && (
-              <span className="chip">{lineLabel(score.line, venue.kind)}</span>
+            {score.queue && score.queue.value !== "none" && (
+              <span className="chip">
+                {lineLabel(score.queue.value, venue.kind)}
+                <span className="chip-age">{relativeTime(score.queue.minutesSinceLast)}</span>
+              </span>
             )}
           </div>
         </div>
@@ -93,7 +91,7 @@ export default async function GuidePage({ params }: { params: Promise<{ slug: st
 
         <h1 className="page-title guide-title">{guide.title}</h1>
         <p className="source-line" style={{ marginBottom: 16 }}>
-          Updated {formatPlainDate(guide.updated)}
+          Updated {formatNightLong(guide.updated)}
         </p>
 
         {guide.intro.map((para, i) => (

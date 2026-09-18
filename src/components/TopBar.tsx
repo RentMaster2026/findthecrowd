@@ -1,23 +1,32 @@
+import Link from "next/link";
+
 /**
- * The header. Wordmark on the left, the city's live state on the right —
- * the count of reports in the last hour is the single most honest indicator
- * of whether this product is working tonight.
+ * The header. Compact wordmark, the city, and the city's live state.
+ *
+ * The count says CONTRIBUTORS, not reports, because that is the number that
+ * means something: five updates from one person is one person. It is also the
+ * most honest indicator of whether the product is working tonight, so it stays
+ * on screen even when it reads zero.
  */
-export function TopBar({ liveReports }: { liveReports?: number }) {
+export function TopBar({ contributorsThisHour }: { contributorsThisHour?: number }) {
   return (
     <header className="topbar">
-      <div className="wordmark">
+      <Link href="/" className="wordmark">
         <span className="dot" aria-hidden="true" />
         <span>
-          Find the <span style={{ color: "var(--hot)" }}>Crowd</span>
+          Find the <span className="brand-accent">Crowd</span>
         </span>
-      </div>
+      </Link>
       <div className="topbar-meta">
-        <div>Ottawa</div>
-        {liveReports !== undefined && (
-          <div>
-            {liveReports} {liveReports === 1 ? "report" : "reports"} this hour
-          </div>
+        <span className="topbar-city">Ottawa</span>
+        {contributorsThisHour !== undefined && (
+          <span className="topbar-count">
+            {contributorsThisHour === 0
+              ? "no updates this hour"
+              : `${contributorsThisHour} ${
+                  contributorsThisHour === 1 ? "person" : "people"
+                } reported this hour`}
+          </span>
         )}
       </div>
     </header>

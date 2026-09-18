@@ -1,216 +1,305 @@
 import { describe, expect, it } from "vitest";
 import {
-  HALF_LIFE_MIN,
-  MIN_CONFIDENT_REPORTS,
+  CROWD_FRESH_MIN,
+  MIN_CONFIDENT_CONTRIBUTORS,
+  QUEUE_FRESH_MIN,
   WINDOW_MIN,
   bandFor,
   computeVibeScore,
   freshnessFor,
+  hasRankingEvidence,
+  latestPerContributor,
   rankValue,
   recencyWeight,
   trustWeight,
 } from "./score";
-import type { CrowdLevel, CrowdReport, LineLength } from "./types";
+import type { CrowdLevel, CrowdReport, LineLength, ReporterRole, VibeTag } from "./types";
 
-const NOW = new Date("2026-09-19T23:30:00-04:00");
+const NOW = new Date("2026-09-19T03:00:00.000Z"); // 11pm Ottawa, Friday
 
-function report(overrides: Partial<CrowdReport> & { minutesAgo: number }): CrowdReport {
+let seq = 0;
+function report(
+  overrides: Partial<CrowdReport> & { minutesAgo: number }
+): CrowdReport {
   const { minutesAgo, ...rest } = overrides;
+  seq += 1;
   return {
-    id: `r${Math.random()}`,
-    venueId: "v1",
-    reporterId: "d_test",
-    createdAt: new Date(NOW.getTime() - minutesAgo * 60000).toISOString(),
+    id: `r${seq}`,
+    venueId: "v-test",
+    reporterId: `d_person${seq}`,
+    createdAt: new Date(NOW.getTime() - minutesAgo * 60_000).toISOString(),
     crowd: 3 as CrowdLevel,
     line: "none" as LineLength,
     cover: null,
     worthIt: true,
-    tags: [],
+    tags: [] as VibeTag[],
     netConfirms: 0,
     ...rest,
   };
 }
 
-describe("recencyWeight", () => {
-  it("is 1 for a report made right now", () => {
+describe("decay and weighting", () => {
+  it("halves a report's weight every half life", () => {
     expect(recencyWeight(0)).toBe(1);
+    expect(recencyWeight(90)).toBeCloseTo(0.5, 5);
+    expect(recencyWeight(180)).toBeCloseTo(0.25, 5);
   });
 
-  it("halves at exactly one half-life", () => {
-    expect(recencyWeight(HALF_LIFE_MIN)).toBeCloseTo(0.5, 10);
-    expect(recencyWeight(HALF_LIFE_MIN * 2)).toBeCloseTo(0.25, 10);
-  });
-
-  it("never reaches zero inside the window", () => {
-    expect(recencyWeight(WINDOW_MIN)).toBeGreaterThan(0);
-  });
-});
-
-describe("trustWeight", () => {
-  it("is neutral with no votes", () => {
+  it("lets confirmations bend a report's weight without erasing or doubling it", () => {
     expect(trustWeight(0)).toBe(1);
+    expect(trustWeight(-99)).toBeGreaterThan(0.5);
+    expect(trustWeight(99)).toBeLessThan(2);
   });
 
-  it("cannot erase a report however many disputes it gets", () => {
-    expect(trustWeight(-100)).toBeGreaterThan(0.5);
+  it("bands on the share of people, not on how busy it is", () => {
+    expect(bandFor(null)).toBe("no-signal");
+    expect(bandFor(80)).toBe("worth-going");
+    expect(bandFor(50)).toBe("mixed");
+    expect(bandFor(10)).toBe("skip-it");
   });
 
-  it("cannot let one popular report dominate", () => {
-    expect(trustWeight(1000)).toBeLessThanOrEqual(1.6);
+  it("calls a report live only while the crowd reading is still current", () => {
+    expect(freshnessFor(null)).toBe("cold");
+    expect(freshnessFor(CROWD_FRESH_MIN)).toBe("live");
+    expect(freshnessFor(CROWD_FRESH_MIN + 1)).toBe("recent");
+    expect(freshnessFor(WINDOW_MIN + 1)).toBe("cold");
   });
 });
 
-describe("computeVibeScore", () => {
-  it("returns no signal when there are no reports", () => {
+describe("no reports", () => {
+  it("has no score, no crowd, no queue and says nothing about the room", () => {
     const s = computeVibeScore([], NOW);
     expect(s.score).toBeNull();
     expect(s.band).toBe("no-signal");
-    expect(s.sampleSize).toBe(0);
+    expect(s.contributors).toBe(0);
+    expect(s.crowd).toBeNull();
+    expect(s.queue).toBeNull();
+    // The important one: absence of reports must never read as zero.
+    expect(s.score).not.toBe(0);
+  });
+});
+
+describe("expired reports", () => {
+  it("ignores anything past the window entirely", () => {
+    const s = computeVibeScore([report({ minutesAgo: WINDOW_MIN + 10 })], NOW);
+    expect(s.score).toBeNull();
+    expect(s.contributors).toBe(0);
   });
 
-  it("is the share of people who said it's worth coming", () => {
-    const reports = [
-      report({ minutesAgo: 1, worthIt: true }),
-      report({ minutesAgo: 1, worthIt: true }),
-      report({ minutesAgo: 1, worthIt: true }),
-      report({ minutesAgo: 1, worthIt: false }),
-    ];
-    expect(computeVibeScore(reports, NOW).score).toBe(75);
-  });
-
-  it("ignores reports older than the window", () => {
-    const s = computeVibeScore([report({ minutesAgo: WINDOW_MIN + 30 })], NOW);
-    expect(s.sampleSize).toBe(0);
+  it("ignores a report from the future rather than trusting a bad clock", () => {
+    const s = computeVibeScore([report({ minutesAgo: -30 })], NOW);
     expect(s.score).toBeNull();
   });
+});
 
-  it("ignores reports dated in the future", () => {
-    const s = computeVibeScore([report({ minutesAgo: -60 })], NOW);
-    expect(s.sampleSize).toBe(0);
+describe("one report", () => {
+  it("is usable but never confident", () => {
+    const s = computeVibeScore([report({ minutesAgo: 10, worthIt: true })], NOW);
+    expect(s.score).toBe(100);
+    expect(s.contributors).toBe(1);
+    expect(s.confident).toBe(false);
+    expect(s.freshness).toBe("live");
+  });
+});
+
+describe("distinct contributors", () => {
+  it("counts people, not submissions", () => {
+    const spammer = [
+      report({ minutesAgo: 50, reporterId: "d_same", worthIt: true }),
+      report({ minutesAgo: 40, reporterId: "d_same", worthIt: true }),
+      report({ minutesAgo: 30, reporterId: "d_same", worthIt: true }),
+      report({ minutesAgo: 20, reporterId: "d_same", worthIt: true }),
+      report({ minutesAgo: 10, reporterId: "d_same", worthIt: true }),
+    ];
+    const s = computeVibeScore(spammer, NOW);
+    expect(s.contributors).toBe(1);
+    expect(s.confident).toBe(false);
   });
 
-  it("weights a fresh report above a stale one", () => {
+  it("cannot be pushed over the confidence floor by one person repeating", () => {
+    const many = Array.from({ length: 20 }, (_, i) =>
+      report({ minutesAgo: i + 1, reporterId: "d_same", worthIt: true })
+    );
+    expect(computeVibeScore(many, NOW).confident).toBe(false);
+  });
+
+  it("uses a contributor's newest report and drops their older one", () => {
     const s = computeVibeScore(
       [
-        report({ minutesAgo: 5, worthIt: true }),
-        report({ minutesAgo: 300, worthIt: false }),
+        report({ minutesAgo: 120, reporterId: "d_changed", worthIt: true, crowd: 5 }),
+        report({ minutesAgo: 5, reporterId: "d_changed", worthIt: false, crowd: 1 }),
       ],
       NOW
     );
-    // Fresh "yes" carries far more weight than a five-hour-old "no".
-    expect(s.score).toBeGreaterThan(90);
+    expect(s.contributors).toBe(1);
+    expect(s.score).toBe(0); // the newer "no" replaced the older "yes"
+    expect(s.crowd?.value).toBe(1);
   });
 
-  it("flags low sample sizes as unconfident", () => {
-    const few = Array.from({ length: MIN_CONFIDENT_REPORTS - 1 }, () =>
-      report({ minutesAgo: 10 })
+  it("reaches confidence with enough separate people", () => {
+    const people = Array.from({ length: MIN_CONFIDENT_CONTRIBUTORS }, (_, i) =>
+      report({ minutesAgo: 10, reporterId: `d_p${i}`, worthIt: true })
     );
-    expect(computeVibeScore(few, NOW).confident).toBe(false);
-
-    const enough = Array.from({ length: MIN_CONFIDENT_REPORTS }, () =>
-      report({ minutesAgo: 10 })
-    );
-    expect(computeVibeScore(enough, NOW).confident).toBe(true);
+    const s = computeVibeScore(people, NOW);
+    expect(s.contributors).toBe(MIN_CONFIDENT_CONTRIBUTORS);
+    expect(s.confident).toBe(true);
   });
 
-  it("keeps crowd level independent of the score", () => {
-    // Rammed, and everybody hates it.
-    const s = computeVibeScore(
-      Array.from({ length: 6 }, () => report({ minutesAgo: 5, crowd: 5, worthIt: false })),
+  it("only counts a repeat contributor once in latestPerContributor", () => {
+    const rows = latestPerContributor(
+      [
+        report({ minutesAgo: 30, reporterId: "d_a" }),
+        report({ minutesAgo: 10, reporterId: "d_a" }),
+        report({ minutesAgo: 20, reporterId: "d_b" }),
+      ],
       NOW
     );
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.report.reporterId === "d_a")?.age).toBe(10);
+  });
+});
+
+describe("conflicting reports", () => {
+  it("reports disagreement instead of hiding it in an average", () => {
+    const s = computeVibeScore(
+      [
+        report({ minutesAgo: 5, reporterId: "d_1", worthIt: true }),
+        report({ minutesAgo: 6, reporterId: "d_2", worthIt: true }),
+        report({ minutesAgo: 7, reporterId: "d_3", worthIt: false }),
+        report({ minutesAgo: 8, reporterId: "d_4", worthIt: false }),
+      ],
+      NOW
+    );
+    expect(s.split).toBe(true);
+    expect(s.score).toBeGreaterThan(30);
+    expect(s.score).toBeLessThan(70);
+  });
+
+  it("does not call a lone dissenter in a big group a split", () => {
+    const rows = [
+      ...Array.from({ length: 9 }, (_, i) =>
+        report({ minutesAgo: 5, reporterId: `d_y${i}`, worthIt: true })
+      ),
+      report({ minutesAgo: 5, reporterId: "d_n", worthIt: false }),
+    ];
+    expect(computeVibeScore(rows, NOW).split).toBe(false);
+  });
+});
+
+describe("separate freshness windows", () => {
+  it("drops the crowd reading once it is older than the crowd window", () => {
+    const s = computeVibeScore(
+      [report({ minutesAgo: CROWD_FRESH_MIN + 5, crowd: 5 })],
+      NOW
+    );
+    expect(s.score).not.toBeNull(); // still informs the recommendation
+    expect(s.crowd).toBeNull(); // but is not a current crowd reading
+  });
+
+  it("drops the queue reading sooner than the crowd reading", () => {
+    const s = computeVibeScore(
+      [report({ minutesAgo: QUEUE_FRESH_MIN + 5, crowd: 4, line: "brutal" })],
+      NOW
+    );
+    expect(s.crowd).not.toBeNull();
+    expect(s.queue).toBeNull();
+  });
+
+  it("attaches the age and the people behind every reading it does show", () => {
+    const s = computeVibeScore(
+      [
+        report({ minutesAgo: 5, reporterId: "d_1", crowd: 4, line: "long" }),
+        report({ minutesAgo: 9, reporterId: "d_2", crowd: 5, line: "long" }),
+      ],
+      NOW
+    );
+    expect(s.crowd?.contributors).toBe(2);
+    expect(s.crowd?.minutesSinceLast).toBe(5);
+    expect(s.queue?.value).toBe("long");
+    expect(s.lastReportAt).toBeTruthy();
+  });
+
+  it("keeps a cover reading for the full window because cover moves slowly", () => {
+    const s = computeVibeScore([report({ minutesAgo: 200, cover: 20 })], NOW);
+    expect(s.cover?.value).toBe(20);
+    expect(s.queue).toBeNull();
+  });
+});
+
+describe("crowd and recommendation stay separate", () => {
+  it("can be packed and not worth going", () => {
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      report({ minutesAgo: 5, reporterId: `d_${i}`, crowd: 5, worthIt: false })
+    );
+    const s = computeVibeScore(rows, NOW);
+    expect(s.crowd?.value).toBe(5);
     expect(s.score).toBe(0);
-    expect(s.crowd).toBe(5);
-  });
-
-  it("takes the median line, not the worst one", () => {
-    const s = computeVibeScore(
-      [
-        report({ minutesAgo: 5, line: "none" }),
-        report({ minutesAgo: 5, line: "none" }),
-        report({ minutesAgo: 5, line: "short" }),
-        report({ minutesAgo: 5, line: "brutal" }),
-      ],
-      NOW
-    );
-    expect(s.line).not.toBe("brutal");
-  });
-
-  it("only surfaces tags a third of reporters mentioned", () => {
-    const s = computeVibeScore(
-      [
-        report({ minutesAgo: 5, tags: ["good-music", "good-crowd"] }),
-        report({ minutesAgo: 5, tags: ["good-music"] }),
-        report({ minutesAgo: 5, tags: ["good-music"] }),
-        report({ minutesAgo: 5, tags: ["overpriced"] }),
-      ],
-      NOW
-    );
-    expect(s.topTags).toContain("good-music");
-    expect(s.topTags).not.toContain("overpriced");
-  });
-
-  it("reports the median observed cover, ignoring blanks", () => {
-    const s = computeVibeScore(
-      [
-        report({ minutesAgo: 5, cover: 20 }),
-        report({ minutesAgo: 5, cover: 20 }),
-        report({ minutesAgo: 5, cover: null }),
-      ],
-      NOW
-    );
-    expect(s.cover).toBe(20);
+    expect(s.band).toBe("skip-it");
   });
 });
 
-describe("bandFor", () => {
-  it("maps the boundaries the UI promises", () => {
-    expect(bandFor(100)).toBe("going-off");
-    expect(bandFor(80)).toBe("going-off");
-    expect(bandFor(79)).toBe("worth-it");
-    expect(bandFor(60)).toBe("worth-it");
-    expect(bandFor(59)).toBe("mixed");
-    expect(bandFor(40)).toBe("mixed");
-    expect(bandFor(39)).toBe("skip-it");
-    expect(bandFor(0)).toBe("skip-it");
-    expect(bandFor(null)).toBe("no-signal");
+describe("non-independent reports", () => {
+  it("keeps venue and team reports out of the public number", () => {
+    const rows = [
+      report({ minutesAgo: 5, reporterId: "d_pub", worthIt: false }),
+      ...Array.from({ length: 5 }, (_, i) =>
+        report({
+          minutesAgo: 5,
+          reporterId: `d_staff${i}`,
+          worthIt: true,
+          role: "venue" as ReporterRole,
+        })
+      ),
+    ];
+    const s = computeVibeScore(rows, NOW);
+    expect(s.contributors).toBe(1);
+    expect(s.score).toBe(0);
   });
 });
 
-describe("freshnessFor", () => {
-  it("degrades through the states in order", () => {
-    expect(freshnessFor(5)).toBe("live");
-    expect(freshnessFor(45)).toBe("live");
-    expect(freshnessFor(46)).toBe("recent");
-    expect(freshnessFor(180)).toBe("recent");
-    expect(freshnessFor(181)).toBe("earlier");
-    expect(freshnessFor(WINDOW_MIN + 1)).toBe("cold");
-    expect(freshnessFor(null)).toBe("cold");
-  });
-});
-
-describe("rankValue", () => {
-  it("does not let two enthusiastic people outrank a busy consensus", () => {
-    const tinySample = computeVibeScore(
-      [report({ minutesAgo: 20, worthIt: true }), report({ minutesAgo: 20, worthIt: true })],
+describe("ranking", () => {
+  it("does not let a tiny unanimous sample beat a well supported one", () => {
+    const tiny = computeVibeScore(
+      [
+        report({ minutesAgo: 20, reporterId: "d_a", worthIt: true }),
+        report({ minutesAgo: 20, reporterId: "d_b", worthIt: true }),
+      ],
       NOW
     );
-    const bigSample = computeVibeScore(
-      Array.from({ length: 15 }, (_, i) => report({ minutesAgo: 5, worthIt: i < 13 })),
+    const solid = computeVibeScore(
+      Array.from({ length: 15 }, (_, i) =>
+        report({ minutesAgo: 5, reporterId: `d_s${i}`, worthIt: i < 13 })
+      ),
       NOW
     );
-
-    expect(tinySample.score).toBe(100);
-    expect(bigSample.score).toBeLessThan(100);
-    expect(rankValue(bigSample)).toBeGreaterThan(rankValue(tinySample));
+    expect(tiny.score).toBe(100);
+    expect(solid.score).toBeLessThan(90);
+    expect(rankValue(solid)).toBeGreaterThan(rankValue(tiny));
   });
 
-  it("puts venues with no signal last", () => {
+  it("puts anything with a score above anything without one", () => {
     const none = computeVibeScore([], NOW);
-    const bad = computeVibeScore(
-      Array.from({ length: 5 }, () => report({ minutesAgo: 5, worthIt: false })),
+    const weak = computeVibeScore([report({ minutesAgo: 300, worthIt: false })], NOW);
+    expect(rankValue(weak)).toBeGreaterThan(rankValue(none));
+  });
+});
+
+describe("ranking evidence gate", () => {
+  it("refuses comparative claims with nothing behind them", () => {
+    expect(hasRankingEvidence([])).toBe(false);
+    expect(hasRankingEvidence([computeVibeScore([], NOW)])).toBe(false);
+    // One live venue is not a ranking.
+    expect(
+      hasRankingEvidence([computeVibeScore([report({ minutesAgo: 5 })], NOW)])
+    ).toBe(false);
+  });
+
+  it("allows them once two venues are live and one is confident", () => {
+    const confident = computeVibeScore(
+      Array.from({ length: 5 }, (_, i) => report({ minutesAgo: 5, reporterId: `d_c${i}` })),
       NOW
     );
-    expect(rankValue(bad)).toBeGreaterThan(rankValue(none));
+    const other = computeVibeScore([report({ minutesAgo: 8, reporterId: "d_x" })], NOW);
+    expect(hasRankingEvidence([confident, other])).toBe(true);
   });
 });

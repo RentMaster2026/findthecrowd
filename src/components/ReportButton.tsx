@@ -6,12 +6,14 @@ import type { VenueKind } from "@/lib/types";
 
 export function ReportButton({
   venueId,
+  venueSlug,
   venueName,
   venueKind,
-  label = "I'm here, report the vibe",
+  label = "I'm here, add an update",
   ghost = false,
 }: {
   venueId: string;
+  venueSlug?: string;
   venueName: string;
   venueKind: VenueKind;
   label?: string;
@@ -21,12 +23,13 @@ export function ReportButton({
 
   return (
     <>
-      <button className={ghost ? "btn btn-ghost" : "btn"} onClick={() => setOpen(true)}>
+      <button type="button" className={ghost ? "btn btn-ghost" : "btn"} onClick={() => setOpen(true)}>
         {label}
       </button>
       {open && (
         <ReportSheet
           venueId={venueId}
+          venueSlug={venueSlug}
           venueName={venueName}
           venueKind={venueKind}
           onClose={() => setOpen(false)}
